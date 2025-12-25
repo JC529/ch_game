@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>拼音雨：汉字保卫战 (修复版)</title>
+    <style>
+        /* 基础样式 */
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Microsoft YaHei', sans-serif;
+            background: linear-gradient(to bottom, #141E30, #243B55); /* 改成深色背景更护眼 */
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 100vh;
+            user-select: none; /* 防止双击选中文字影响体验 */
+        }
+
+        /* 游戏界面层 */
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 10;
+            pointer-events: none; /* 让鼠标穿透文字 */
+        }
+
+        #score-board { font-size: 24px; font-weight: bold; color: #00ff88; }
+        #level-board { font-size: 18px; color: #ffd700; margin-top: 5px; }
+
+        #game-canvas {
+            display: block;
+            margin: 0 auto;
+            background: rgba(0, 0, 0, 0.2);
+        }
+
+        /* 输入框区域 */
+        #input-area {
+            position: absolute;
+            bottom: 50px;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            z-index: 20;
+        }
+
+        #pinyin-input {
+            font-size: 24px;
+            padding: 12px 25px;
+            border-radius: 50px;
+            border: 3px solid #00c6ff;
+            background: rgba(255, 255, 255, 0.95);
+            outline: none;
+            text-align: center;
+            width: 320px;
+            box-shadow: 0 0 20px rgba(0, 198, 255, 0.4);
+            text-transform: lowercase;
+            transition: all 0.2s;
+        }
+        
+        #pinyin-input:focus {
+            transform: scale(1.05);
+            border-color: #0072ff;
+        }
+
+        /* 开始/结束 遮罩层 */
+        #overlay {
+            position: absolute;
+            top: 0; left: 0; 
+            width: 100vw; height: 100vh;
+            background: rgba(0,0,0,0.9);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+        }
+
+        h1 { font-size: 56px; margin: 0 0 20px 0; color: #fff; text-shadow: 0 0 20px #00c6ff; letter-spacing: 5px; }
+        p { font-size: 20px; color: #bbb; margin-bottom: 40px; }
+        
+        button {
+            padding: 18px 50px;
+            font-size: 28px;
+            font-weight: bold;
+            background: linear-gradient(45deg, #ff416c, #ff4b2b);
+            color: white;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            box-shadow: 0 10px 30px rgba(255, 75, 43, 0.5);
+            transition: transform 0.1s, box-shadow 0.1s;
+        }
+
+        button:hover { transform: scale(1.05); box-shadow: 0 15px 40px rgba(255, 75, 43, 0.7); }
+        button:active { transform: scale(0.95); }
+
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div id="score-board">得分: 0</div>
+        <div id="level-board">难度: 1</div>
+    </div>
+
+    <canvas id="game-canvas"></canvas>
+
+    <div id="input-area">
+        <input type="text" id="pinyin-input" placeholder="在此输入拼音..." autocomplete="off">
+    </div>
+
+    <div id="overlay">
+        <h1>汉字保卫战</h1>
+        <p>游戏规则：汉字落下时，输入拼音并回车</p>
+        <button id="start-btn">点击开始</button>
+    </div>
+
+    <script>
+        // 等待页面完全加载后再运行脚本，防止找不到元素
+        window.addEventListener('load', function() {
+            
+            // --- 1. 游戏数据 (你可以修改这里) ---
+            const WORD_DATABASE = [
+                { char: '水', pinyin: 'shui' }, { char: '火', pinyin: 'huo' },
+                { char: '山', pinyin: 'shan' }, { char: '风', pinyin: 'feng' },
+                { char: '雷', pinyin: 'lei' }, { char: '电', pinyin: 'dian' },
+                { char: '龙', pinyin: 'long' }, { char: '虎', pinyin: 'hu' },
+                { char: '牛', pinyin: 'niu' }, { char: '羊', pinyin: 'yang' },
+                { char: '中', pinyin: 'zhong' }, { char: '国', pinyin: 'guo' },
+                { char: '大', pinyin: 'da' }, { char: '学', pinyin: 'xue' },
+                { char: '英', pinyin: 'ying' }, { char: '雄', pinyin: 'xiong' },
+                { char: '联', pinyin: 'lian' }, { char: '盟', pinyin: 'meng' },
+                { char: '吃', pinyin: 'chi' }, { char: '饭', pinyin: 'fan' }
+            ];
+
+            // --- 2. 获取元素 ---
+            const canvas = document.getElementById('game-canvas');
+            const ctx = canvas.getContext('2d');
+            const input = document.getElementById('pinyin-input');
+            const overlay = document.getElementById('overlay');
+            const startBtn = document.getElementById('start-btn');
+            const scoreEl = document.getElementById('score-board');
+            const levelEl = document.getElementById('level-board');
+
+            // --- 3. 游戏变量 ---
+            let score = 0;
+            let level = 1;
+            let isGameOver = false;
+            let animationId;
+            let spawnRate = 1500; // 生成速度(毫秒)
+            let lastSpawnTime = 0;
+            let words = []; // 屏幕上的字
+
+            // --- 4. 初始化画布尺寸 ---
+            function resizeCanvas() {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+            }
+            window.addEventListener('resize', resizeCanvas);
+            resizeCanvas();
+
+            // --- 5. 核心逻辑 ---
+            
+            // 开始游戏函数
+            function startGame() {
+                // 重置变量
+                score = 0;
+                level = 1;
+                spawnRate = 1500;
+                words = [];
+                isGameOver = false;
+                
+                // 更新UI
+                scoreEl.innerText = "得分: " + score;
+                levelEl.innerText = "难度: " + level;
+                input.value = "";
+                
+                // 强制隐藏遮罩层 (直接修改 style 属性，确保生效)
+                overlay.style.display = "none";
+                
+                // 聚焦输入框
+                input.focus();
+
+                // 启动循环
+                lastSpawnTime = performance.now();
+                cancelAnimationFrame(animationId); // 防止重复点击导致多重循环
+                gameLoop(lastSpawnTime);
+                
+                console.log("游戏已启动"); // 控制台调试信息
+            }
+
+            // 游戏结束函数
+            function stopGame() {
+                isGameOver = true;
+                cancelAnimationFrame(animationId);
+                
+                // 显示遮罩层
+                overlay.style.display = "flex";
+                document.querySelector('#overlay h1').innerText = "游戏结束";
+                document.querySelector('#overlay p').innerText = "最终得分: " + score;
+                startBtn.innerText = "重新挑战";
+            }
+
+            // 生成汉字
+            function spawnWord() {
+                const randomObj = WORD_DATABASE[Math.floor(Math.random() * WORD_DATABASE.length)];
+                const xPos = Math.random() * (canvas.width - 60) + 30; // 随机X坐标
+                
+                words.push({
+                    char: randomObj.char,
+                    pinyin: randomObj.pinyin,
+                    x: xPos,
+                    y: -50, // 从屏幕上方外开始
+                    speed: Math.random() * 1.5 + 1 + (level * 0.2), // 速度随等级增加
+                    color: `hsl(${Math.random() * 360}, 80%, 70%)`
+                });
+            }
+
+            // 每一帧的计算
+            function update(timestamp) {
+                // 生成控制
+                if (timestamp - lastSpawnTime > spawnRate) {
+                    spawnWord();
+                    lastSpawnTime = timestamp;
+                    // 难度随时间微调
+                    if (spawnRate > 500) spawnRate -= 5;
+                }
+
+                // 移动与判断
+                for (let i = 0; i < words.length; i++) {
+                    let w = words[i];
+                    w.y += w.speed;
+
+                    // 触底判定
+                    if (w.y > canvas.height - 50) { // 留一点余量
+                        stopGame();
+                        return; 
+                    }
+                }
+            }
+
+            // 每一帧的绘制
+            function draw() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height); // 清空画布
+
+                ctx.font = "bold 40px 'Microsoft YaHei'";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+
+                words.forEach(w => {
+                    // 发光效果
+                    ctx.shadowColor = w.color;
+                    ctx.shadowBlur = 15;
+                    ctx.fillStyle = "white";
+                    
+                    // 画字
+                    ctx.fillText(w.char, w.x, w.y);
+                    
+                    // 调试模式：取消下面注释可以看到拼音提示
+                    // ctx.font = "16px Arial";
+                    // ctx.fillText(w.pinyin, w.x, w.y + 30);
+                    // ctx.font = "bold 40px 'Microsoft YaHei'";
+                });
+                
+                ctx.shadowBlur = 0; // 重置阴影以免影响其他元素
+            }
+
+            // 主循环
+            function gameLoop(timestamp) {
+                if (isGameOver) return;
+                
+                update(timestamp);
+                draw();
+                
+                animationId = requestAnimationFrame(gameLoop);
+            }
+
+            // --- 6. 交互监听 ---
+            
+            // 按钮点击
+            startBtn.addEventListener('click', function() {
+                console.log("点击了开始按钮");
+                startGame();
+            });
+
+            // 键盘输入
+            input.addEventListener('keydown', function(e) {
+                if (e.key === "Enter") {
+                    const val = input.value.trim().toLowerCase();
+                    if (!val) return;
+
+                    let hit = false;
+                    
+                    // 查找匹配的字 (优先消除最下面的，即Y值最大的)
+                    // 创建临时数组排序，以免打乱原数组顺序导致渲染闪烁
+                    let sortedWords = words.map((w, i) => ({...w, originalIndex: i}))
+                                           .sort((a, b) => b.y - a.y);
+
+                    for (let item of sortedWords) {
+                        if (item.pinyin === val) {
+                            // 命中了！从原数组中删除
+                            // 注意：由于可能有多个相同的字，我们必须小心删除正确的索引
+                            // 简单的做法是直接过滤掉找到的那个字
+                            
+                            // 这里我们用一种简单的方法：倒序遍历原数组找到第一个匹配的
+                            // 实际上因为上面排序了，我们只要找到 originalIndex 并删除即可
+                            
+                            // 更简单的方法：直接遍历原数组，找到最靠下的匹配项
+                            let targetIndex = -1;
+                            let maxY = -1000;
+                            
+                            for(let k=0; k<words.length; k++){
+                                if(words[k].pinyin === val && words[k].y > maxY){
+                                    maxY = words[k].y;
+                                    targetIndex = k;
+                                }
+                            }
+                            
+                            if(targetIndex !== -1){
+                                words.splice(targetIndex, 1); // 消除
+                                score += 10;
+                                hit = true;
+                                
+                                // 升级逻辑
+                                if(score % 50 === 0) {
+                                    level++;
+                                    // 闪烁背景庆祝升级
+                                    document.body.style.backgroundColor = "#243B55";
+                                    setTimeout(() => document.body.style.backgroundColor = "", 100);
+                                }
+                            }
+                            break; // 一次只消一个
+                        }
+                    }
+
+                    if (hit) {
+                        input.value = ""; // 清空
+                        input.style.borderColor = "#00ff88"; // 绿色边框反馈
+                        setTimeout(() => input.style.borderColor = "#00c6ff", 200);
+                    } else {
+                        // 错误反馈
+                        input.style.borderColor = "red";
+                        // 震动效果
+                        input.style.transform = "translateX(5px)";
+                        setTimeout(() => {
+                            input.style.transform = "translateX(0)";
+                            input.style.borderColor = "#00c6ff";
+                        }, 100);
+                    }
+                    
+                    // 更新分数UI
+                    scoreEl.innerText = "得分: " + score;
+                    levelEl.innerText = "难度: " + level;
+                }
+            });
+            
+            // 自动聚焦 (防止点击空白处导致输入框失焦)
+            document.addEventListener('click', function(e) {
+                if (!isGameOver && e.target !== startBtn) {
+                    input.focus();
+                }
+            });
+
+        }); // window.onload 结束
+    </script>
+</body>
+</html>
